@@ -36,30 +36,14 @@ jobs:
           SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
           echo "$SSH" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-tmate.txt"
 
-      - name: 📦 Install jq and Playit
-        run: |
-          sudo apt update -y
-          sudo apt install -y jq
-          curl -sSL https://playit.gg/install.sh | bash
-
-      - name: 🚪 Start Playit tunnel for SSH
+      - name: 🚀 Start Playit Tunnel
         env:
           PLAYIT_TOKEN: ${{ secrets.PLAYIT_TOKEN }}
         run: |
-          # Start Playit tunnel for port 22 (SSH)
-          playit tunnel --token "$PLAYIT_TOKEN" --port 22 --name "SSH Tunnel" &
-
-          # Tunggu Playit up (maks 20 detik)
-          sleep 5
-
-          # Ambil URL Playit
-          PLAYIT_URL=$(curl -s http://localhost:8080/tunnels | jq -r '.tunnels[0].public_url')
-          if [ -z "$PLAYIT_URL" ]; then
-            echo "❌ Playit tunnel gagal dibuat."
-            exit 1
-          fi
-          echo "Playit SSH URL: $PLAYIT_URL"
-          echo "$PLAYIT_URL" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-playit.txt"
+          wget -q https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -O playit
+          chmod +x playit
+          nohup ./playit --token "$PLAYIT_TOKEN" > playit.log 2>&1 &
+          echo "✅ Playit started."
 
       - name: 📦 Save backup (user data only)
         run: |
@@ -83,12 +67,4 @@ jobs:
             i=$((i+1))
           done
 
-      - name: 🔁 Restart workflow automatically
-        if: always()
-        run: |
-          curl -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.RESTART_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/dispatches \
-            -d '{"event_type": "create-vps", "client_payload": {"vps_name": "manual-vps", "backup": true}}'
+      
