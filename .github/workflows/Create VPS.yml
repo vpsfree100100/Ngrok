@@ -1,4 +1,4 @@
-name: Create VPS (Auto-Restart & Safe + Playit SSH)
+name: Create VPS (Auto-Restart & Safe + Ngrok SSH)
 
 on:
   workflow_dispatch:
@@ -36,14 +36,38 @@ jobs:
           SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
           echo "$SSH" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-tmate.txt"
 
-      - name: 🚀 Start Playit Tunnel
+      - name: 🚪 Start ngrok TCP tunnel for SSH
         env:
-          PLAYIT_TOKEN: ${{ secrets.PLAYIT_TOKEN }}
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
-          wget -q https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -O playit
-          chmod +x playit
-          nohup ./playit --token "$PLAYIT_TOKEN" > playit.log 2>&1 &
-          echo "✅ Playit started."
+          # Install ngrok
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf ngrok-v3-stable-linux-amd64.tgz
+          sudo mv ngrok /usr/local/bin
+
+          # Set authtoken
+          ngrok config add-authtoken "$NGROK_TOKEN"
+
+          # Start ngrok TCP tunnel for port 22 (SSH)
+          nohup ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
+
+          # Tunggu ngrok up (maks 20 detik)
+          for i in {1..20}; do
+            sleep 1
+            if curl -s http://127.0.0.1:4040/api/tunnels | grep -q 'tcp://'; then
+              break
+            fi
+          done
+
+          # Ambil URL ngrok
+          NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -oE 'tcp://[0-9a-zA-Z\.\-]+:[0-9]+' | head -n1)
+          if [ -z "$NGROK_URL" ]; then
+            echo "❌ Ngrok tunnel gagal dibuat. Cek ngrok.log untuk detail."
+            cat ngrok.log
+            exit 1
+          fi
+          echo "Ngrok SSH URL: $NGROK_URL"
+          echo "$NGROK_URL" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-ngrok.txt"
 
       - name: 📦 Save backup (user data only)
         run: |
@@ -67,4 +91,12 @@ jobs:
             i=$((i+1))
           done
 
-      
+      - name: 🔁 Restart workflow automatically
+        if: always()
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer YOUR_GITHUB_TOKEN_HERE" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type": "create-vps", "client_payload": {"vps_name": "manual-vps", "backup": true}}'
