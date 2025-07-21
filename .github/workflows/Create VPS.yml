@@ -1,0 +1,73 @@
+name: Create VPS (Auto-Restart & Safe + Ngrok SSH)
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [create-vps]
+
+jobs:
+  start-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours
+
+    steps:
+      - name: ⬇️ Checkout
+        uses: actions/checkout@v3
+
+      - name: 📁 Prepare dirs
+        run: mkdir -p links .backup
+
+      - name: 💾 Restore backup (optional)
+        run: |
+          name="${{ github.event.client_payload.vps_name || 'manual-vps' }}"
+          if [ "${{ github.event.client_payload.backup }}" == "true" ]; then
+            echo "Restoring backup for $name..."
+            unzip ".backup/$name.zip" -d . || echo "⚠️ No backup found."
+          fi
+
+      - name: 🔑 Set password for runner
+        run: echo "runner:passwordvps" | sudo chpasswd
+
+      - name: 🔐 Start tmate session
+        run: |
+          sudo apt update -y && sudo apt install -y tmate
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          echo "$SSH" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-tmate.txt"
+
+      - name: 🚪 Start ngrok TCP tunnel for SSH
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf ngrok-v3-stable-linux-amd64.tgz
+          sudo mv ngrok /usr/local/bin
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
+          sleep 8
+          NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o 'tcp://[0-9a-zA-Z\.\-:]*' | head -n1)
+          echo "Ngrok SSH URL: $NGROK_URL"
+          echo "$NGROK_URL" | tee "links/${{ github.event.client_payload.vps_name || 'manual-vps' }}-ngrok.txt"
+
+      - name: 📦 Save backup (user data only)
+        run: |
+          name="${{ github.event.client_payload.vps_name || 'manual-vps' }}"
+          zip -r ".backup/$name.zip" . \
+            -x "/usr/*" "/bin/*" "/lib/*" "/lib64/*" "/sbin/*" "/etc/*" "/var/*" \
+            ".git/*" ".github/*" ".backup/*" || true
+
+      - name: 📤 Push updated files
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🔁 Updated SSH + backup for ${{ github.event.client_payload.vps_name || 'manual-vps' }}"
+          file_pattern: 'links/*.txt .backup/*.zip'
+
+      - name: ⏳ Keep VPS alive (POSIX-safe loop)
+        run: |
+          i=1
+          while [ $i -le 360 ]; do
+            echo "🟢 Running minute $i/360..."
+            command sleep 60 || break
+            i=$((i+1))
+          done
